@@ -3,9 +3,9 @@ package izumi.functional.bio.impl
 import izumi.functional.bio.Exit.ZIOExit
 import izumi.functional.bio.data.{Morphism3, RestoreInterruption3}
 import izumi.functional.bio.{Async3, Exit, Fiber2, Fiber3, Local3, __PlatformSpecific}
+import izumi.reflect.Tag
 import zio._izumicompat_.__ZIOFiberContext.FiberContext
-import zio.internal.ZIOSucceedNow
-import zio.{Fiber, NeedsEnv, ZIO}
+import zio.{Fiber, ZIO}
 
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.atomic.AtomicBoolean
@@ -18,10 +18,10 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
   @inline override final def InnerF: this.type = this
 
   @inline override final def unit: ZIO[Any, Nothing, Unit] = ZIO.unit
-  @inline override final def pure[A](a: A): ZIO[Any, Nothing, A] = ZIOSucceedNow(a)
-  @inline override final def sync[A](effect: => A): ZIO[Any, Nothing, A] = ZIO.effectTotal(effect)
-  @inline override final def syncThrowable[A](effect: => A): ZIO[Any, Throwable, A] = ZIO.effect(effect)
-  @inline override final def suspend[R, A](effect: => ZIO[R, Throwable, A]): ZIO[R, Throwable, A] = ZIO.effectSuspend(effect)
+  @inline override final def pure[A](a: A): ZIO[Any, Nothing, A] = ZIO.succeedUnsafe(a)
+  @inline override final def sync[A](effect: => A): ZIO[Any, Nothing, A] = ZIO.succeed(effect)
+  @inline override final def syncThrowable[A](effect: => A): ZIO[Any, Throwable, A] = ZIO.attempt(effect)
+  @inline override final def suspend[R, A](effect: => ZIO[R, Throwable, A]): ZIO[R, Throwable, A] = ZIO.suspend(effect)
 
   @inline override final def fail[E](v: => E): ZIO[Any, E, Nothing] = ZIO.fail(v)
   @inline override final def terminate(v: => Throwable): ZIO[Any, Nothing, Nothing] = ZIO.die(v)
@@ -56,7 +56,7 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
   }
   @inline override final def orElse[R, E, A, E2](r: ZIO[R, E, A], f: => ZIO[R, E2, A]): ZIO[R, E2, A] = r.orElse(f)
 
-  @inline override final def redeem[R, E, A, E2, B](r: ZIO[R, E, A])(err: E => ZIO[R, E2, B], succ: A => ZIO[R, E2, B]): ZIO[R, E2, B] = r.foldM(err, succ)
+  @inline override final def redeem[R, E, A, E2, B](r: ZIO[R, E, A])(err: E => ZIO[R, E2, B], succ: A => ZIO[R, E2, B]): ZIO[R, E2, B] = r.foldZIO(err, succ)
   @inline override final def catchAll[R, E, A, E2](r: ZIO[R, E, A])(f: E => ZIO[R, E2, A]): ZIO[R, E2, A] = r.catchAll(f)
   @inline override final def catchSome[R, E, A, E1 >: E](r: ZIO[R, E, A])(f: PartialFunction[E, ZIO[R, E1, A]]): ZIO[R, E1, A] = r.catchSome(f)
 
@@ -65,24 +65,24 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
   @inline override final def redeemPure[R, E, A, B](r: ZIO[R, E, A])(err: E => B, succ: A => B): ZIO[R, Nothing, B] = r.fold(err, succ)
 
   @inline override final def retryWhile[R, E, A](r: ZIO[R, E, A])(f: E => Boolean): ZIO[R, E, A] = r.retryWhile(f)
-  @inline override final def retryWhileF[R, R1 <: R, E, A](r: ZIO[R, E, A])(f: E => ZIO[R1, Nothing, Boolean]): ZIO[R1, E, A] = r.retryWhileM(f)
+  @inline override final def retryWhileF[R, R1 <: R, E, A](r: ZIO[R, E, A])(f: E => ZIO[R1, Nothing, Boolean]): ZIO[R1, E, A] = r.retryWhileZIO(f)
 
   @inline override final def retryUntil[R, E, A](r: ZIO[R, E, A])(f: E => Boolean): ZIO[R, E, A] = r.retryUntil(f)
-  @inline override final def retryUntilF[R, R1 <: R, E, A](r: ZIO[R, E, A])(f: E => ZIO[R1, Nothing, Boolean]): ZIO[R1, E, A] = r.retryUntilM(f)
+  @inline override final def retryUntilF[R, R1 <: R, E, A](r: ZIO[R, E, A])(f: E => ZIO[R1, Nothing, Boolean]): ZIO[R1, E, A] = r.retryUntilZIO(f)
 
   @inline override final def fromOptionOr[R, E, A](valueOnNone: => A, r: ZIO[R, E, Option[A]]): ZIO[R, E, A] = r.someOrElse(valueOnNone)
 
-  @inline override final def fromOptionF[R, E, A](fallbackOnNone: => ZIO[R, E, A], r: ZIO[R, E, Option[A]]): ZIO[R, E, A] = r.someOrElseM(fallbackOnNone)
+  @inline override final def fromOptionF[R, E, A](fallbackOnNone: => ZIO[R, E, A], r: ZIO[R, E, Option[A]]): ZIO[R, E, A] = r.someOrElseZIO(fallbackOnNone)
 
   @inline override final def bracket[R, E, A, B](acquire: ZIO[R, E, A])(release: A => ZIO[R, Nothing, Unit])(use: A => ZIO[R, E, B]): ZIO[R, E, B] = {
-    ZIO.bracket(acquire)(release)(use)
+    ZIO.acquireReleaseWith(acquire)(release)(use)
   }
   @inline override final def bracketCase[R, E, A, B](
     acquire: ZIO[R, E, A]
   )(release: (A, Exit[E, B]) => ZIO[R, Nothing, Unit]
   )(use: A => ZIO[R, E, B]
   ): ZIO[R, E, B] = {
-    ZIO.bracketExit[R, E, A, B](acquire, (a, exit) => ZIOExit.withIsInterruptedF(i => release(a, ZIOExit.toExit(exit)(i))), use)
+    ZIO.acquireReleaseExitWith[R, E, A](acquire)((a: A, exit: zio.Exit[E, B]) => ZIOExit.withIsInterruptedF(i => release(a, ZIOExit.toExit(exit)(i))))(use)
   }
   @inline override final def guaranteeCase[R, E, A](f: ZIO[R, E, A], cleanup: Exit[E, A] => ZIO[R, Nothing, Unit]): ZIO[R, E, A] = {
     f.onExit(exit => ZIOExit.withIsInterruptedF(cleanup apply ZIOExit.toExit(exit)(_)))
@@ -90,8 +90,8 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
 
   @inline override final def traverse[R, E, A, B](l: Iterable[A])(f: A => ZIO[R, E, B]): ZIO[R, E, List[B]] = ZIO.foreach(l.toList)(f)
   @inline override final def sequence[R, E, A, B](l: Iterable[ZIO[R, E, A]]): ZIO[R, E, List[A]] = ZIO.collectAll(l.toList)
-  @inline override final def traverse_[R, E, A](l: Iterable[A])(f: A => ZIO[R, E, Unit]): ZIO[R, E, Unit] = ZIO.foreach_(l)(f)
-  @inline override final def sequence_[R, E](l: Iterable[ZIO[R, E, Unit]]): ZIO[R, E, Unit] = ZIO.foreach_(l)(identity)
+  @inline override final def traverse_[R, E, A](l: Iterable[A])(f: A => ZIO[R, E, Unit]): ZIO[R, E, Unit] = ZIO.foreachDiscard(l)(f)
+  @inline override final def sequence_[R, E](l: Iterable[ZIO[R, E, Unit]]): ZIO[R, E, Unit] = ZIO.foreachDiscard(l)(identity)
 
   @inline override final def sandbox[R, E, A](r: ZIO[R, E, A]): ZIO[R, Exit.Failure[E], A] = {
     r.sandbox.flatMapError(ZIOExit withIsInterrupted ZIOExit.toExit(_))
@@ -101,15 +101,15 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
   @inline override final def never: ZIO[Any, Nothing, Nothing] = ZIO.never
 
   @inline override final def async[E, A](register: (Either[E, A] => Unit) => Unit): ZIO[Any, E, A] = {
-    ZIO.effectAsync(cb => register(cb apply _.fold(ZIO.fail(_), ZIOSucceedNow)))
+    ZIO.async(cb => register(cb apply _.fold(ZIO.fail(_), ZIO.succeed(_))))
   }
   @inline override final def asyncF[R, E, A](register: (Either[E, A] => Unit) => ZIO[R, E, Unit]): ZIO[R, E, A] = {
-    ZIO.effectAsyncM(cb => register(cb apply _.fold(ZIO.fail(_), ZIOSucceedNow)))
+    ZIO.asyncZIO(cb => register(cb apply _.fold(ZIO.fail(_), ZIO.succeed(_))))
   }
   @inline override final def asyncCancelable[E, A](register: (Either[E, A] => Unit) => Canceler): ZIO[Any, E, A] = {
-    ZIO.effectAsyncInterrupt[Any, E, A] {
+    ZIO.asyncInterrupt[Any, E, A] {
       cb =>
-        val canceler = register(cb apply _.fold(ZIO.fail(_), ZIOSucceedNow))
+        val canceler = register(cb apply _.fold(ZIO.fail(_), ZIO.succeed(_)))
         Left(canceler)
     }
   }
@@ -142,17 +142,17 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
   }
 
   @inline override final def parTraverseN[R, E, A, B](maxConcurrent: Int)(l: Iterable[A])(f: A => ZIO[R, E, B]): ZIO[R, E, List[B]] = {
-    ZIO.foreachParN(maxConcurrent)(l.toList)(f(_).interruptible)
+    ZIO.foreachPar(l.toList)(f(_).interruptible).withParallelism(maxConcurrent)
   }
 
   @inline override final def parTraverseN_[R, E, A, B](maxConcurrent: Int)(l: Iterable[A])(f: A => ZIO[R, E, B]): ZIO[R, E, Unit] = {
-    ZIO.foreachParN_(maxConcurrent)(l)(f(_).interruptible)
+    ZIO.foreachParDiscard(l)(f(_).interruptible).withParallelism(maxConcurrent)
   }
   @inline override final def parTraverse[R, E, A, B](l: Iterable[A])(f: A => ZIO[R, E, B]): ZIO[R, E, List[B]] = {
     ZIO.foreachPar(l.toList)(f(_).interruptible)
   }
   @inline override final def parTraverse_[R, E, A, B](l: Iterable[A])(f: A => ZIO[R, E, B]): ZIO[R, E, Unit] = {
-    ZIO.foreachPar_(l)(f(_).interruptible)
+    ZIO.foreachParDiscard(l)(f(_).interruptible)
   }
 
   @inline override final def zipWithPar[R, E, A, B, C](fa: ZIO[R, E, A], fb: ZIO[R, E, B])(f: (A, B) => C): ZIO[R, E, C] = {
@@ -168,7 +168,7 @@ open class AsyncZio extends Async3[ZIO] with Local3[ZIO] {
     fa &> fb
   }
 
-  @inline override final def ask[R]: ZIO[R, Nothing, R] = ZIO.environment
+  @inline override final def ask[R : Tag]: ZIO[R, Nothing, R] = ZIO.service[R]
   @inline override final def askWith[R, A](f: R => A): ZIO[R, Nothing, A] = ZIO.access(f)
 
   @inline override final def provide[R, E, A](fr: ZIO[R, E, A])(r: => R): ZIO[Any, E, A] = fr.provide(r)(NeedsEnv)
